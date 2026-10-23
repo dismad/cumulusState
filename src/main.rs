@@ -85,6 +85,7 @@ struct ShieldedStats {
     sapling_outputs: u64,
     orchard_actions: u64,
     ironwood_actions: u64,
+    sprout_joinsplits: u64,
 }
 #[derive(Default, Serialize, Clone)]
 struct TypeStats {
@@ -101,6 +102,7 @@ struct LocktimeStats { nonzero: u64, zero: u64, high_sequence: u64 }
 struct SpendStats {
     indexer_populated: bool, probed: u64, outpoint_hits: u64,
     sapling_nullifier_hits: u64, orchard_nullifier_hits: u64, ironwood_nullifier_hits: u64,
+    sprout_nullifier_hits: u64,
 }
 #[derive(Default, Serialize, Clone)]
 struct DayStats {
@@ -202,6 +204,7 @@ impl Acc {
         self.shielded.sapling_outputs += other.shielded.sapling_outputs;
         self.shielded.orchard_actions += other.shielded.orchard_actions;
         self.shielded.ironwood_actions += other.shielded.ironwood_actions;
+        self.shielded.sprout_joinsplits += other.shielded.sprout_joinsplits;
         self.types.v1 += other.types.v1;
         self.types.v2 += other.types.v2;
         self.types.v3 += other.types.v3;
@@ -224,6 +227,7 @@ impl Acc {
         self.spends.sapling_nullifier_hits += other.spends.sapling_nullifier_hits;
         self.spends.orchard_nullifier_hits += other.spends.orchard_nullifier_hits;
         self.spends.ironwood_nullifier_hits += other.spends.ironwood_nullifier_hits;
+        self.spends.sprout_nullifier_hits += other.spends.sprout_nullifier_hits;
         self.per_block_txs.extend(other.per_block_txs);
         self.days.extend(other.days);
     }
@@ -275,16 +279,19 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
     let sap_outs = tx.sapling_outputs().count() as u64;
     let orchard = tx.orchard_actions().count() as u64;
     let ironwood = tx.ironwood_actions().count() as u64;
-    let has_shielded = sap_spends > 0 || sap_outs > 0 || orchard > 0 || ironwood > 0;
+    let sprout = tx.sprout_joinsplit_descriptions().count() as u64;
+    let has_shielded = sap_spends > 0 || sap_outs > 0 || orchard > 0 || ironwood > 0 || sprout > 0;
 
     acc.shielded.sapling_spends += sap_spends;
     acc.shielded.sapling_outputs += sap_outs;
     acc.shielded.orchard_actions += orchard;
     acc.shielded.ironwood_actions += ironwood;
+    acc.shielded.sprout_joinsplits += sprout;
     acc.current_day.shielded.sapling_spends += sap_spends;
     acc.current_day.shielded.sapling_outputs += sap_outs;
     acc.current_day.shielded.orchard_actions += orchard;
     acc.current_day.shielded.ironwood_actions += ironwood;
+    acc.current_day.shielded.sprout_joinsplits += sprout;
 
     if has_shielded && !has_t_in && !has_t_out {
         acc.types.fully_shielded += 1;
@@ -353,6 +360,14 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
         if acc.spends.indexer_populated && db.ironwood_revealing_tx_loc(&nf).is_some() {
             acc.spends.ironwood_nullifier_hits += 1;
             acc.current_day.spends.ironwood_nullifier_hits += 1;
+        }
+    }
+    for nf in tx.sprout_nullifiers() {
+        acc.spends.probed += 1;
+        acc.current_day.spends.probed += 1;
+        if acc.spends.indexer_populated && db.sprout_revealing_tx_loc(&nf).is_some() {
+            acc.spends.sprout_nullifier_hits += 1;
+            acc.current_day.spends.sprout_nullifier_hits += 1;
         }
     }
 }
@@ -593,8 +608,8 @@ fn print_expiry(s: &ExpiryStats) {
 fn print_counts(s: &CountStats) { println!("=== Counts ===\nblocks: {}  txs: {}", s.blocks, s.txs); }
 fn print_shielded(s: &ShieldedStats) {
     println!("=== Shielded actions ===");
-    println!("sapling spends: {}\nsapling outputs: {}\norchard actions: {}\nironwood actions: {}",
-        s.sapling_spends, s.sapling_outputs, s.orchard_actions, s.ironwood_actions);
+    println!("sapling spends: {}\nsapling outputs: {}\norchard actions: {}\nironwood actions: {}\nsprout joinsplits: {}",
+        s.sapling_spends, s.sapling_outputs, s.orchard_actions, s.ironwood_actions, s.sprout_joinsplits);
 }
 fn print_types(s: &TypeStats) {
     println!("=== Types ===");
@@ -616,8 +631,8 @@ fn print_locktime(s: &LocktimeStats) {
 }
 fn print_spends(s: &SpendStats) {
     println!("=== Spends (indexer) ===");
-    println!("indexer_populated: {}\nprobed: {}\noutpoint hits: {}\nsapling nullifier hits: {}\norchard nullifier hits: {}\nironwood nullifier hits: {}",
-        s.indexer_populated, s.probed, s.outpoint_hits, s.sapling_nullifier_hits, s.orchard_nullifier_hits, s.ironwood_nullifier_hits);
+    println!("indexer_populated: {}\nprobed: {}\noutpoint hits: {}\nsapling nullifier hits: {}\norchard nullifier hits: {}\nironwood nullifier hits: {}\nsprout nullifier hits: {}",
+        s.indexer_populated, s.probed, s.outpoint_hits, s.sapling_nullifier_hits, s.orchard_nullifier_hits, s.ironwood_nullifier_hits, s.sprout_nullifier_hits);
 }
 
 fn indexer_looks_populated(db: &ZebraDb) -> bool {
