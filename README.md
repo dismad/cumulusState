@@ -103,12 +103,53 @@ Stop `zebrad` before scanning for the cleanest read. If the cache dir needs root
 | `all` | Everything below |
 | `expiry` | Expiry height distribution, zero fraction, delta histogram |
 | `counts` | Block and transaction counts |
-| `shielded` | Sapling spends/outputs, Orchard actions, Ironwood actions |
+| `shielded` | Sapling spends/outputs, Orchard/Ironwood actions, Sprout JoinSplits, value balances |
 | `types` | Version mix (v1–v6), coinbase vs user, fully shielded / mixed / transparent |
 | `addresses` | Unique transparent receivers, receiving outputs |
-| `blocks` | Avg/max txs per block |
+| `blocks` | Avg/max txs per block, total tx bytes |
 | `locktime` | Nonzero vs zero locktime, high sequence |
-| `spends` | Reverse spend lookups (outpoints, Sapling/Orchard/Ironwood nullifiers) |
+| `spends` | Reverse spend lookups (outpoints, Sapling/Orchard/Ironwood/Sprout nullifiers) |
+
+## Collected fields
+
+**Expiry**
+- total, zero, nonzero, pre-Overwinter, zero fraction
+- delta histogram (expiry height − block height)
+
+**Shielded**
+- Sapling spends and outputs
+- Orchard actions
+- Ironwood actions
+- Sprout JoinSplits
+- Sprout `vpub_old` / `vpub_new` (transparent value leaving / entering Sprout)
+- Sapling, Orchard, and Ironwood value balances (net pool change per window)
+
+**Types**
+- v1, v2, v3, v4, v5, v6, other
+- coinbase, user
+- fully shielded, mixed, transparent-only
+
+**Addresses**
+- unique transparent receivers
+- total receiving outputs
+
+**Anchors**
+- Sapling, Orchard, and Ironwood anchors cited
+
+**Blocks**
+- block count, total txs, avg/max txs per block
+- total transaction bytes
+
+**Locktime**
+- nonzero vs zero locktime
+- inputs with sequence > 0
+
+**Spends (requires indexer)**
+- outpoint reverse lookups
+- Sapling, Orchard, Ironwood, and Sprout nullifier reverse lookups
+- probed count and indexer-populated flag
+
+Per-day buckets (`--per-day`) repeat every field above, plus `start` and `end` height for the window.
 
 ## Per-day windows
 
