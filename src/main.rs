@@ -101,6 +101,8 @@ struct TypeStats {
     fully_shielded: u64, mixed: u64, transparent_only: u64,
 }
 #[derive(Default, Serialize, Clone)]
+struct AnchorStats { sapling: u64, orchard: u64, ironwood: u64 }
+#[derive(Default, Serialize, Clone)]
 struct TreeStats { sapling: u64, orchard: u64, ironwood: u64, sprout: u64 }
 #[derive(Default, Serialize, Clone)]
 struct BlockStats { blocks: u64, total_txs: u64, avg_txs_per_block: f64, max_txs_per_block: u64, total_tx_bytes: u64 }
@@ -242,6 +244,10 @@ impl Acc {
         self.anchors.sapling += other.anchors.sapling;
         self.anchors.orchard += other.anchors.orchard;
         self.anchors.ironwood += other.anchors.ironwood;
+        self.trees.sapling = self.trees.sapling.max(other.trees.sapling);
+        self.trees.orchard = self.trees.orchard.max(other.trees.orchard);
+        self.trees.ironwood = self.trees.ironwood.max(other.trees.ironwood);
+        self.trees.sprout = self.trees.sprout.max(other.trees.sprout);
         self.receivers.extend(other.receivers);
         self.locktime.nonzero += other.locktime.nonzero;
         self.locktime.zero += other.locktime.zero;
@@ -603,6 +609,7 @@ async fn main() -> Result<()> {
                 types: acc.types,
                 addresses: acc.addresses,
                 anchors: acc.anchors,
+                trees: acc.trees,
                 blocks,
                 locktime: acc.locktime,
                 spends: acc.spends,
