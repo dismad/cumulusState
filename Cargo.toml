@@ -1,0 +1,21 @@
+[package]
+name = "cumulusState"
+version = "0.1.0"
+edition = "2021"
+description = "Multipurpose direct scanner for Zebra v7 (state format v29) finalized database"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Pin to Zebra 7.0.0 release
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra", tag = "v7.0.0" }
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra", tag = "v7.0.0" }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rayon = "1"
+num_cpus = "1"
