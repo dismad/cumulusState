@@ -101,7 +101,7 @@ struct TypeStats {
     fully_shielded: u64, mixed: u64, transparent_only: u64,
 }
 #[derive(Default, Serialize, Clone)]
-struct AnchorStats { sapling: u64, orchard: u64, ironwood: u64 }
+struct TreeStats { sapling: u64, orchard: u64, ironwood: u64, sprout: u64 }
 #[derive(Default, Serialize, Clone)]
 struct BlockStats { blocks: u64, total_txs: u64, avg_txs_per_block: f64, max_txs_per_block: u64, total_tx_bytes: u64 }
 #[derive(Default, Serialize, Clone)]
@@ -123,6 +123,7 @@ struct DayStats {
     types: TypeStats,
     addresses: AddressStats,
     anchors: AnchorStats,
+    trees: TreeStats,
     blocks: BlockStats,
     locktime: LocktimeStats,
     spends: SpendStats,
@@ -136,6 +137,7 @@ struct AllOutput {
     types: TypeStats,
     addresses: AddressStats,
     anchors: AnchorStats,
+    trees: TreeStats,
     blocks: BlockStats,
     locktime: LocktimeStats,
     spends: SpendStats,
@@ -164,6 +166,7 @@ struct Acc {
     types: TypeStats,
     addresses: AddressStats,
     anchors: AnchorStats,
+    trees: TreeStats,
     locktime: LocktimeStats,
     spends: SpendStats,
     receivers: HashSet<String>,
@@ -464,6 +467,18 @@ fn blocks_per_day(h: u32) -> u32 {
             block_txs += 1;
             accumulate(&mut acc, height, &tx, network, db);
         }
+        if let Some(tree) = db.sapling_tree_by_height(&height) {
+            acc.trees.sapling = tree.position().map(|p| u64::from(p)).unwrap_or(0);
+            acc.current_day.trees.sapling = acc.trees.sapling;
+        }
+        if let Some(tree) = db.orchard_tree_by_height(&height) {
+            acc.trees.orchard = tree.position().map(|p| u64::from(p)).unwrap_or(0);
+            acc.current_day.trees.orchard = acc.trees.orchard;
+        }
+        if let Some(tree) = db.ironwood_tree_by_height(&height) {
+            acc.trees.ironwood = tree.position().map(|p| u64::from(p)).unwrap_or(0);
+            acc.current_day.trees.ironwood = acc.trees.ironwood;
+        }
         acc.per_block_txs.push(block_txs);
         acc.day_tx_counts.push(block_txs);
         acc.counts.txs += block_txs;
@@ -523,7 +538,8 @@ async fn main() -> Result<()> {
 
     let threads = args.threads.unwrap_or_else(num_cpus::get).max(1);
     let range_len = end.saturating_sub(start).saturating_add(1);
-    let chunk_size = (range_len / threads as u32).max(1);
+    let num_chunks = threads * 8;
+    let chunk_size = (range_len / num_chunks as u32).max(1);
 
     let pb = ProgressBar::new(range_len as u64);
     pb.set_style(
