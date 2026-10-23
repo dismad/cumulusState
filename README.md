@@ -69,7 +69,7 @@ Stop `zebrad` before scanning for the cleanest read. If the cache dir needs root
 | `--end` | tip | End height (inclusive) |
 | `--blocks` | — | Scan the last N blocks from tip (overrides `--start`/`--end`) |
 | `--json` | off | Emit JSON instead of plain text |
-| `--per-day` | off | Also emit per-day aggregates (~576-block windows) |
+| `--per-day` | off | Also emit per-day aggregates |
 | `--threads` | CPU count | Parallel chunk count |
 | `--out` | stdout | Write JSON to this path instead of stdout |
 
@@ -87,7 +87,19 @@ Stop `zebrad` before scanning for the cleanest read. If the cache dir needs root
 | `locktime` | Nonzero vs zero locktime, high sequence |
 | `spends` | Reverse spend lookups (outpoints, Sapling/Orchard/Ironwood nullifiers) |
 
-## Zcash block counts
+## Per-day windows
+
+Day buckets follow the target block time of each era:
+
+| Period | Height | Target | Blocks/day |
+|--------|--------|--------|------------|
+| Pre-Blossom | 0 – 653,599 | 150 s | 576 |
+| Blossom – NU7 | 653,600 – 3,543,404 | 75 s | 1,152 |
+| NU7+ | 3,543,405+ | 25 s | 3,456 |
+
+No other upgrade changed the target. A full-chain `--per-day` run produces true calendar days across all three periods.
+
+## Zcash block counts (current, 75 s)
 
 | Period | Blocks |
 |--------|--------|
@@ -95,6 +107,8 @@ Stop `zebrad` before scanning for the cleanest read. If the cache dir needs root
 | Week | 8,064 |
 | Month (30d) | 34,560 |
 | Year (365d) | 420,480 |
+
+After NU7 these triple.
 
 ## Output
 
@@ -107,4 +121,4 @@ Per-day buckets include `start` and `end` height so charts can label the x-axis 
 - The indexer must be enabled on the state for `spends` reverse lookups to return hits.
 - Coinbase transactions are counted separately and excluded from version totals.
 - v6 is the Ironwood (NU6.3) transaction version.
-- Per-day windows are 576 blocks (Bitcoin target). For true Zcash days, use 1,152.
+- Per-day windows switch at Blossom (653,600) and NU7 (3,543,405).
