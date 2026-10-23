@@ -11,6 +11,7 @@ use tracing::info;
 use zebra_chain::{
     block::Height,
     parameters::Network,
+    serialization::ZcashSerialize,
     transaction::Transaction,
 };
 use zebra_state::{
@@ -86,16 +87,23 @@ struct ShieldedStats {
     orchard_actions: u64,
     ironwood_actions: u64,
     sprout_joinsplits: u64,
+    sprout_vpub_old: u64,
+    sprout_vpub_new: u64,
+    sapling_value_balance: i64,
+    orchard_value_balance: i64,
+    ironwood_value_balance: i64,
 }
+#[derive(Default, Serialize, Clone)]
+struct AddressStats { unique_receivers: u64, total_receiving_outputs: u64 }
 #[derive(Default, Serialize, Clone)]
 struct TypeStats {
     v1: u64, v2: u64, v3: u64, v4: u64, v5: u64, v6: u64, other: u64, coinbase: u64, user: u64,
     fully_shielded: u64, mixed: u64, transparent_only: u64,
 }
 #[derive(Default, Serialize, Clone)]
-struct AddressStats { unique_receivers: u64, total_receiving_outputs: u64 }
+struct AnchorStats { sapling: u64, orchard: u64, ironwood: u64 }
 #[derive(Default, Serialize, Clone)]
-struct BlockStats { blocks: u64, total_txs: u64, avg_txs_per_block: f64, max_txs_per_block: u64 }
+struct BlockStats { blocks: u64, total_txs: u64, avg_txs_per_block: f64, max_txs_per_block: u64, total_tx_bytes: u64 }
 #[derive(Default, Serialize, Clone)]
 struct LocktimeStats { nonzero: u64, zero: u64, high_sequence: u64 }
 #[derive(Default, Serialize, Clone)]
@@ -114,6 +122,7 @@ struct DayStats {
     shielded: ShieldedStats,
     types: TypeStats,
     addresses: AddressStats,
+    anchors: AnchorStats,
     blocks: BlockStats,
     locktime: LocktimeStats,
     spends: SpendStats,
@@ -126,6 +135,7 @@ struct AllOutput {
     shielded: ShieldedStats,
     types: TypeStats,
     addresses: AddressStats,
+    anchors: AnchorStats,
     blocks: BlockStats,
     locktime: LocktimeStats,
     spends: SpendStats,
@@ -153,6 +163,7 @@ struct Acc {
     shielded: ShieldedStats,
     types: TypeStats,
     addresses: AddressStats,
+    anchors: AnchorStats,
     locktime: LocktimeStats,
     spends: SpendStats,
     receivers: HashSet<String>,
@@ -161,6 +172,7 @@ struct Acc {
     days: Vec<DayStats>,
     current_day: DayStats,
     day_tx_counts: Vec<u64>,
+    total_tx_bytes: u64,
 }
 
 impl Acc {
@@ -176,6 +188,7 @@ impl Acc {
             total_txs: total,
             avg_txs_per_block: if n > 0 { total as f64 / n as f64 } else { 0.0 },
             max_txs_per_block: max,
+            total_tx_bytes: d.blocks.total_tx_bytes,
         };
         self.day_tx_counts.clear();
         if d.expiry.zero + d.expiry.nonzero > 0 {
@@ -205,6 +218,11 @@ impl Acc {
         self.shielded.orchard_actions += other.shielded.orchard_actions;
         self.shielded.ironwood_actions += other.shielded.ironwood_actions;
         self.shielded.sprout_joinsplits += other.shielded.sprout_joinsplits;
+        self.shielded.sprout_vpub_old += other.shielded.sprout_vpub_old;
+        self.shielded.sprout_vpub_new += other.shielded.sprout_vpub_new;
+        self.shielded.sapling_value_balance += other.shielded.sapling_value_balance;
+        self.shielded.orchard_value_balance += other.shielded.orchard_value_balance;
+        self.shielded.ironwood_value_balance += other.shielded.ironwood_value_balance;
         self.types.v1 += other.types.v1;
         self.types.v2 += other.types.v2;
         self.types.v3 += other.types.v3;
@@ -218,6 +236,9 @@ impl Acc {
         self.types.mixed += other.types.mixed;
         self.types.transparent_only += other.types.transparent_only;
         self.addresses.total_receiving_outputs += other.addresses.total_receiving_outputs;
+        self.anchors.sapling += other.anchors.sapling;
+        self.anchors.orchard += other.anchors.orchard;
+        self.anchors.ironwood += other.anchors.ironwood;
         self.receivers.extend(other.receivers);
         self.locktime.nonzero += other.locktime.nonzero;
         self.locktime.zero += other.locktime.zero;
@@ -230,6 +251,7 @@ impl Acc {
         self.spends.sprout_nullifier_hits += other.spends.sprout_nullifier_hits;
         self.per_block_txs.extend(other.per_block_txs);
         self.days.extend(other.days);
+        self.total_tx_bytes += other.total_tx_bytes;
     }
 }
 
@@ -280,6 +302,20 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
     let orchard = tx.orchard_actions().count() as u64;
     let ironwood = tx.ironwood_actions().count() as u64;
     let sprout = tx.sprout_joinsplit_descriptions().count() as u64;
+    let mut sprout_vpub_old = 0u64;
+    let mut sprout_vpub_new = 0u64;
+    for js in tx.sprout_joinsplit_descriptions() {
+        sprout_vpub_old += i64::from(js.vpub_old()) as u64;
+        sprout_vpub_new += i64::from(js.vpub_new()) as u64;
+    }
+    let sapling_vb = tx.sapling_value_balance().sapling_amount().zatoshis() as i64;
+    let orchard_vb = tx.orchard_value_balance().orchard_amount().zatoshis() as i64;
+    let ironwood_vb = tx.ironwood_value_balance().ironwood_amount().zatoshis() as i64;
+    let tx_size = tx.zcash_serialized_size() as u64;
+    let sapling_anchors = tx.sapling_anchors().len() as u64;
+    let orchard_anchors = if tx.has_orchard_shielded_data() { 1 } else { 0 };
+    let ironwood_anchors = if tx.has_ironwood_shielded_data() { 1 } else { 0 };
+
     let has_shielded = sap_spends > 0 || sap_outs > 0 || orchard > 0 || ironwood > 0 || sprout > 0;
 
     acc.shielded.sapling_spends += sap_spends;
@@ -287,11 +323,29 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
     acc.shielded.orchard_actions += orchard;
     acc.shielded.ironwood_actions += ironwood;
     acc.shielded.sprout_joinsplits += sprout;
+    acc.shielded.sprout_vpub_old += sprout_vpub_old;
+    acc.shielded.sprout_vpub_new += sprout_vpub_new;
+    acc.shielded.sapling_value_balance += sapling_vb;
+    acc.shielded.orchard_value_balance += orchard_vb;
+    acc.shielded.ironwood_value_balance += ironwood_vb;
+    acc.total_tx_bytes += tx_size;
+    acc.current_day.blocks.total_tx_bytes += tx_size;
+    acc.anchors.sapling += sapling_anchors;
+    acc.anchors.orchard += orchard_anchors;
+    acc.anchors.ironwood += ironwood_anchors;
+    acc.current_day.anchors.sapling += sapling_anchors;
+    acc.current_day.anchors.orchard += orchard_anchors;
+    acc.current_day.anchors.ironwood += ironwood_anchors;
     acc.current_day.shielded.sapling_spends += sap_spends;
     acc.current_day.shielded.sapling_outputs += sap_outs;
     acc.current_day.shielded.orchard_actions += orchard;
     acc.current_day.shielded.ironwood_actions += ironwood;
     acc.current_day.shielded.sprout_joinsplits += sprout;
+    acc.current_day.shielded.sprout_vpub_old += sprout_vpub_old;
+    acc.current_day.shielded.sprout_vpub_new += sprout_vpub_new;
+    acc.current_day.shielded.sapling_value_balance += sapling_vb;
+    acc.current_day.shielded.orchard_value_balance += orchard_vb;
+    acc.current_day.shielded.ironwood_value_balance += ironwood_vb;
 
     if has_shielded && !has_t_in && !has_t_out {
         acc.types.fully_shielded += 1;
@@ -415,6 +469,7 @@ fn blocks_per_day(h: u32) -> u32 {
         acc.counts.txs += block_txs;
         acc.current_day.counts.txs += block_txs;
         acc.current_day.counts.blocks += 1;
+        // tx size is accumulated inside accumulate via a side channel; track here if needed
 
         if per_day && (h - day_start + 1 >= day_limit || h == end) {
             acc.current_day.end = h;
@@ -519,6 +574,7 @@ async fn main() -> Result<()> {
         total_txs,
         avg_txs_per_block: if n_blocks > 0 { total_txs as f64 / n_blocks as f64 } else { 0.0 },
         max_txs_per_block: max_txs,
+        total_tx_bytes: acc.total_tx_bytes,
     };
     acc.counts.blocks = n_blocks;
 
@@ -530,6 +586,7 @@ async fn main() -> Result<()> {
                 shielded: acc.shielded,
                 types: acc.types,
                 addresses: acc.addresses,
+                anchors: acc.anchors,
                 blocks,
                 locktime: acc.locktime,
                 spends: acc.spends,
@@ -569,6 +626,7 @@ fn print_all(out: &AllOutput) {
     print_shielded(&out.shielded);
     print_types(&out.types);
     print_addresses(&out.addresses);
+    print_anchors(&out.anchors);
     print_blocks(&out.blocks);
     print_locktime(&out.locktime);
     print_spends(&out.spends);
@@ -608,8 +666,9 @@ fn print_expiry(s: &ExpiryStats) {
 fn print_counts(s: &CountStats) { println!("=== Counts ===\nblocks: {}  txs: {}", s.blocks, s.txs); }
 fn print_shielded(s: &ShieldedStats) {
     println!("=== Shielded actions ===");
-    println!("sapling spends: {}\nsapling outputs: {}\norchard actions: {}\nironwood actions: {}\nsprout joinsplits: {}",
-        s.sapling_spends, s.sapling_outputs, s.orchard_actions, s.ironwood_actions, s.sprout_joinsplits);
+    println!("sapling spends: {}\nsapling outputs: {}\norchard actions: {}\nironwood actions: {}\nsprout joinsplits: {}\nsprout vpub_old: {}\nsprout vpub_new: {}\nsapling value balance: {}\norchard value balance: {}\nironwood value balance: {}",
+        s.sapling_spends, s.sapling_outputs, s.orchard_actions, s.ironwood_actions, s.sprout_joinsplits,
+        s.sprout_vpub_old, s.sprout_vpub_new, s.sapling_value_balance, s.orchard_value_balance, s.ironwood_value_balance);
 }
 fn print_types(s: &TypeStats) {
     println!("=== Types ===");
@@ -617,13 +676,16 @@ fn print_types(s: &TypeStats) {
     println!("coinbase: {}  user: {}", s.coinbase, s.user);
     println!("fully shielded: {}  mixed: {}  transparent-only: {}", s.fully_shielded, s.mixed, s.transparent_only);
 }
+fn print_anchors(s: &AnchorStats) {
+    println!("=== Anchors cited ===\nsapling: {}\norchard: {}\nironwood: {}", s.sapling, s.orchard, s.ironwood);
+}
 fn print_addresses(s: &AddressStats) {
     println!("=== Transparent addresses ===\nunique receivers: {}\ntotal receiving outputs: {}",
         s.unique_receivers, s.total_receiving_outputs);
 }
 fn print_blocks(s: &BlockStats) {
-    println!("=== Blocks ===\nblocks: {}  total txs: {}  avg txs/block: {:.2}  max: {}",
-        s.blocks, s.total_txs, s.avg_txs_per_block, s.max_txs_per_block);
+    println!("=== Blocks ===\nblocks: {}  total txs: {}  avg txs/block: {:.2}  max: {}  total tx bytes: {}",
+        s.blocks, s.total_txs, s.avg_txs_per_block, s.max_txs_per_block, s.total_tx_bytes);
 }
 fn print_locktime(s: &LocktimeStats) {
     println!("=== Locktime / sequence ===\nnonzero locktime: {}  zero: {}\ninputs with sequence > 0 (sampled): {}",
