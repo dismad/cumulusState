@@ -6,23 +6,28 @@ Opens a Zebra state database read-only and walks transactions by height. Does no
 
 ## Benchmark
 
-Full mainnet scan (Zebra v7, state v29), second run with height-aware day windows:
+Full mainnet scan (Zebra v7, state v29), with work-queue scheduling:
 
 ```
 Scanning 0..=3526439 (tip 3526439)
-3526440/3526440 100% [2h<0s]
-12767.54user 12151.37system 1:37:23elapsed 426%CPU
+3526440/3526440 100% [52m<0s]
+21882.69user 18005.44system 52:16.12elapsed 1271%CPU
 ```
 
 | Metric | Value |
 |--------|-------|
 | Blocks | 3,526,440 |
-| Wall time | 1h 37m |
-| Rate | ~605 blocks/s |
-| CPU | 426% (~4 cores) |
-| Peak RAM | ~1.5 GB |
+| Wall time | 52m 16s |
+| Rate | ~1,125 blocks/s |
+| CPU | 1271% (~13 cores) |
+| Peak RAM | ~2.5 GB |
+| Major faults | 120k |
 
-Disk reads dominate. A warm page cache makes re-runs faster.
+**Previous run (fixed chunks):** 1h 37m at 426% CPU, 298k major faults.
+
+**Why it improved:** The scanner now uses a shared work queue. Threads pull the next 10,000-block range when they finish. Early light blocks no longer leave cores idle while later heavy blocks run. Sustained CPU rose from ~4 cores to ~13, and the warmer access pattern cut major page faults by more than half. Disk is still the limit, but it is used more efficiently.
+
+A warm page cache makes re-runs faster.
 
 ## Requirements
 
