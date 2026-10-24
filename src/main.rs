@@ -18,7 +18,6 @@ use zebra_state::{
     constants::state_database_format_version_in_code,
     Config, TransactionLocation, ZebraDb,
 };
-
 #[derive(Parser, Debug)]
 #[command(
     name = "cumulusState",
@@ -55,7 +54,6 @@ struct Args {
     #[command(subcommand)]
     cmd: Command,
 }
-
 #[derive(Subcommand, Debug)]
 enum Command {
     Expiry,
@@ -68,7 +66,6 @@ enum Command {
     Spends,
     All,
 }
-
 #[derive(Default, Serialize, Clone)]
 struct ExpiryStats {
     total: u64,
@@ -130,7 +127,6 @@ struct DayStats {
     locktime: LocktimeStats,
     spends: SpendStats,
 }
-
 #[derive(Serialize)]
 struct AllOutput {
     expiry: ExpiryStats,
@@ -146,7 +142,6 @@ struct AllOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     per_day: Option<Vec<DayStats>>,
 }
-
 #[derive(Serialize)]
 #[serde(untagged)]
 enum OneOutput {
@@ -159,7 +154,6 @@ enum OneOutput {
     Locktime(LocktimeStats),
     Spends(SpendStats),
 }
-
 #[derive(Default, Clone)]
 struct Acc {
     expiry: ExpiryStats,
@@ -179,7 +173,6 @@ struct Acc {
     day_tx_counts: Vec<u64>,
     total_tx_bytes: u64,
 }
-
 impl Acc {
     fn finish_day(&mut self) {
         let mut d = std::mem::take(&mut self.current_day);
@@ -201,14 +194,12 @@ impl Acc {
         }
         self.days.push(d);
     }
-
     fn finalize(&mut self) {
         self.addresses.unique_receivers = self.receivers.len() as u64;
         if self.expiry.zero + self.expiry.nonzero > 0 {
             self.expiry.zero_fraction = self.expiry.zero as f64 / (self.expiry.zero + self.expiry.nonzero) as f64;
         }
     }
-
     fn merge(&mut self, other: Acc) {
         self.expiry.total += other.expiry.total;
         self.expiry.zero += other.expiry.zero;
@@ -263,17 +254,44 @@ impl Acc {
         self.total_tx_bytes += other.total_tx_bytes;
     }
 }
-
 fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network, db: &ZebraDb) {
     acc.expiry.total += 1;
     acc.current_day.expiry.total += 1;
-
     if tx.is_coinbase() {
         acc.types.coinbase += 1;
         acc.current_day.types.coinbase += 1;
+        let sap_outs = tx.sapling_outputs().count() as u64;
+        let orchard = tx.orchard_actions().count() as u64;
+        let ironwood = tx.ironwood_actions().count() as u64;
+        let sapling_vb = tx.sapling_value_balance().sapling_amount().zatoshis() as i64;
+        let orchard_vb = tx.orchard_value_balance().orchard_amount().zatoshis() as i64;
+        let ironwood_vb = tx.ironwood_value_balance().ironwood_amount().zatoshis() as i64;
+        let tx_size = tx.zcash_serialized_size() as u64;
+        let sapling_anchors = tx.sapling_anchors().len() as u64;
+        let orchard_anchors = if tx.has_orchard_shielded_data() { 1 } else { 0 };
+        let ironwood_anchors = if tx.has_ironwood_shielded_data() { 1 } else { 0 };
+        acc.shielded.sapling_outputs += sap_outs;
+        acc.shielded.orchard_actions += orchard;
+        acc.shielded.ironwood_actions += ironwood;
+        acc.shielded.sapling_value_balance += sapling_vb;
+        acc.shielded.orchard_value_balance += orchard_vb;
+        acc.shielded.ironwood_value_balance += ironwood_vb;
+        acc.total_tx_bytes += tx_size;
+        acc.current_day.blocks.total_tx_bytes += tx_size;
+        acc.anchors.sapling += sapling_anchors;
+        acc.anchors.orchard += orchard_anchors;
+        acc.anchors.ironwood += ironwood_anchors;
+        acc.current_day.shielded.sapling_outputs += sap_outs;
+        acc.current_day.shielded.orchard_actions += orchard;
+        acc.current_day.shielded.ironwood_actions += ironwood;
+        acc.current_day.shielded.sapling_value_balance += sapling_vb;
+        acc.current_day.shielded.orchard_value_balance += orchard_vb;
+        acc.current_day.shielded.ironwood_value_balance += ironwood_vb;
+        acc.current_day.anchors.sapling += sapling_anchors;
+        acc.current_day.anchors.orchard += orchard_anchors;
+        acc.current_day.anchors.ironwood += ironwood_anchors;
         return;
     }
-
     match expiry_height_of(tx) {
         None => {
             acc.expiry.pre_overwinter += 1;
@@ -291,7 +309,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
             *acc.current_day.expiry.delta_histogram.entry(delta).or_default() += 1;
         }
     }
-
     acc.types.user += 1;
     acc.current_day.types.user += 1;
     match tx.version() {
@@ -303,7 +320,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
         6 => { acc.types.v6 += 1; acc.current_day.types.v6 += 1; }
         _ => { acc.types.other += 1; acc.current_day.types.other += 1; }
     }
-
     let has_t_in = !tx.inputs().is_empty();
     let has_t_out = !tx.outputs().is_empty();
     let sap_spends = tx.sapling_spends().count() as u64;
@@ -324,9 +340,7 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
     let sapling_anchors = tx.sapling_anchors().len() as u64;
     let orchard_anchors = if tx.has_orchard_shielded_data() { 1 } else { 0 };
     let ironwood_anchors = if tx.has_ironwood_shielded_data() { 1 } else { 0 };
-
     let has_shielded = sap_spends > 0 || sap_outs > 0 || orchard > 0 || ironwood > 0 || sprout > 0;
-
     acc.shielded.sapling_spends += sap_spends;
     acc.shielded.sapling_outputs += sap_outs;
     acc.shielded.orchard_actions += orchard;
@@ -355,7 +369,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
     acc.current_day.shielded.sapling_value_balance += sapling_vb;
     acc.current_day.shielded.orchard_value_balance += orchard_vb;
     acc.current_day.shielded.ironwood_value_balance += ironwood_vb;
-
     if has_shielded && !has_t_in && !has_t_out {
         acc.types.fully_shielded += 1;
         acc.current_day.types.fully_shielded += 1;
@@ -366,7 +379,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
         acc.types.transparent_only += 1;
         acc.current_day.types.transparent_only += 1;
     }
-
     for out in tx.outputs() {
         if let Some(addr) = out.address(network) {
             let s = addr.to_string();
@@ -376,7 +388,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
             acc.current_day.addresses.total_receiving_outputs += 1;
         }
     }
-
     if tx.raw_lock_time() > 0 {
         acc.locktime.nonzero += 1;
         acc.current_day.locktime.nonzero += 1;
@@ -390,7 +401,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
             acc.current_day.locktime.high_sequence += 1;
         }
     }
-
     for inp in tx.inputs() {
         if let Some(op) = inp.outpoint() {
             acc.spends.probed += 1;
@@ -434,7 +444,6 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
         }
     }
 }
-
 fn scan_chunk(
     db: &ZebraDb,
     start: u32,
@@ -446,22 +455,16 @@ fn scan_chunk(
     let mut acc = Acc::default();
     acc.spends.indexer_populated = indexer_populated;
     acc.current_day.spends.indexer_populated = indexer_populated;
-const BLOSSOM_HEIGHT: u32 = 653_600;
-const NU7_HEIGHT: u32 = 3_543_405;
-
-fn blocks_per_day(h: u32) -> u32 {
-    if h < BLOSSOM_HEIGHT {
-        576   // 150s pre-Blossom
-    } else if h < NU7_HEIGHT {
-        1152  // 75s Blossom to NU7
-    } else {
-        3456  // 25s NU7+
+    const BLOSSOM_HEIGHT: u32 = 653_600;
+    const NU7_HEIGHT: u32 = 3_543_405;
+    fn blocks_per_day(h: u32) -> u32 {
+        if h < BLOSSOM_HEIGHT { 576 }
+        else if h < NU7_HEIGHT { 1152 }
+        else { 3456 }
     }
-}
     let mut day_start = start;
     acc.current_day.start = start;
     let mut day_limit = blocks_per_day(start);
-
     for h in start..=end {
         let height = Height(h);
         let mut block_txs = 0u64;
@@ -474,15 +477,15 @@ fn blocks_per_day(h: u32) -> u32 {
             accumulate(&mut acc, height, &tx, network, db);
         }
         if let Some(tree) = db.sapling_tree_by_height(&height) {
-            acc.trees.sapling = tree.position().map(|p| u64::from(p)).unwrap_or(0);
+            acc.trees.sapling = tree.position().map(|p| u64::from(p) + 1).unwrap_or(0);
             acc.current_day.trees.sapling = acc.trees.sapling;
         }
         if let Some(tree) = db.orchard_tree_by_height(&height) {
-            acc.trees.orchard = tree.position().map(|p| u64::from(p)).unwrap_or(0);
+            acc.trees.orchard = tree.position().map(|p| u64::from(p) + 1).unwrap_or(0);
             acc.current_day.trees.orchard = acc.trees.orchard;
         }
         if let Some(tree) = db.ironwood_tree_by_height(&height) {
-            acc.trees.ironwood = tree.position().map(|p| u64::from(p)).unwrap_or(0);
+            acc.trees.ironwood = tree.position().map(|p| u64::from(p) + 1).unwrap_or(0);
             acc.current_day.trees.ironwood = acc.trees.ironwood;
         }
         acc.per_block_txs.push(block_txs);
@@ -490,8 +493,6 @@ fn blocks_per_day(h: u32) -> u32 {
         acc.counts.txs += block_txs;
         acc.current_day.counts.txs += block_txs;
         acc.current_day.counts.blocks += 1;
-        // tx size is accumulated inside accumulate via a side channel; track here if needed
-
         if per_day && (h - day_start + 1 >= day_limit || h == end) {
             acc.current_day.end = h;
             acc.finish_day();
@@ -504,7 +505,6 @@ fn blocks_per_day(h: u32) -> u32 {
     }
     acc
 }
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -512,25 +512,21 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let args = Args::parse();
-
     let cache_dir = expand_tilde(&args.cache_dir);
     let network = match args.network.as_str() {
         "mainnet" => Network::Mainnet,
         "testnet" => Network::new_default_testnet(),
         _ => unreachable!(),
     };
-
     info!("Opening Zebra state read-only at {}", cache_dir.display());
     let mut config = Config::default();
     config.cache_dir = cache_dir;
     config.ephemeral = false;
     config.delete_old_database = false;
-
     let db = Arc::new(ZebraDb::new(
         &config, "state", &state_database_format_version_in_code(),
         &network, true, std::iter::empty::<String>(), true,
     ).context("failed to open Zebra state database read-only")?);
-
     let tip = db.finalized_tip_height().unwrap_or(Height(0));
     let (start, end) = if let Some(n) = args.blocks {
         let end = tip.0;
@@ -541,53 +537,52 @@ async fn main() -> Result<()> {
         (args.start, end)
     };
     info!("Scanning {}..={} (tip {})", start, end, tip.0);
-
     let threads = args.threads.unwrap_or_else(num_cpus::get).max(1);
     let range_len = end.saturating_sub(start).saturating_add(1);
-    let num_chunks = threads * 8;
-    let chunk_size = (range_len / num_chunks as u32).max(1);
-
+    let chunk_size = 10_000u32;
     let pb = ProgressBar::new(range_len as u64);
     pb.set_style(
         ProgressStyle::with_template("{bar:40} {pos}/{len} {percent}% [{elapsed}<{eta}]")
             .unwrap()
             .progress_chars("##-"),
     );
-
     let indexer_populated = indexer_looks_populated(&db);
-
-    let chunks: Vec<(u32, u32)> = (0..threads)
-        .map(|i| {
-            let cs = start + i as u32 * chunk_size;
-            let ce = if i + 1 == threads { end } else { (cs + chunk_size - 1).min(end) };
-            (cs, ce)
-        })
-        .filter(|(s, e)| s <= e)
-        .collect();
-
-    let partials: Vec<Acc> = chunks
+    let queue = std::sync::Arc::new(std::sync::Mutex::new({
+        let mut q = Vec::new();
+        let mut h = start;
+        while h <= end {
+            let ce = (h + chunk_size - 1).min(end);
+            q.push((h, ce));
+            h = ce + 1;
+        }
+        q
+    }));
+    let partials: Vec<Acc> = (0..threads)
         .into_par_iter()
-        .map(|(cs, ce)| {
-            let acc = scan_chunk(&db, cs, ce, &network, args.per_day, indexer_populated);
-            pb.inc((ce - cs + 1) as u64);
+        .map(|_| {
+            let mut acc = Acc::default();
+            acc.spends.indexer_populated = indexer_populated;
+            loop {
+                let next = queue.lock().unwrap().pop();
+                let Some((cs, ce)) = next else { break };
+                let part = scan_chunk(&db, cs, ce, &network, args.per_day, indexer_populated);
+                acc.merge(part);
+                pb.inc((ce - cs + 1) as u64);
+            }
             acc
         })
         .collect();
-
     pb.finish_with_message("done");
-
     let mut acc = Acc::default();
     acc.spends.indexer_populated = indexer_populated;
     for p in partials {
         acc.merge(p);
     }
-    // Order day windows by start height and assign sequential day index
     acc.days.sort_by_key(|d| d.start);
     for (i, d) in acc.days.iter_mut().enumerate() {
         d.day = i as u32;
     }
     acc.finalize();
-
     let total_txs: u64 = acc.per_block_txs.iter().sum();
     let max_txs = acc.per_block_txs.iter().copied().max().unwrap_or(0);
     let n_blocks = acc.per_block_txs.len() as u64;
@@ -599,7 +594,6 @@ async fn main() -> Result<()> {
         total_tx_bytes: acc.total_tx_bytes,
     };
     acc.counts.blocks = n_blocks;
-
     match args.cmd {
         Command::All => {
             let out = AllOutput {
@@ -642,7 +636,6 @@ async fn main() -> Result<()> {
     }
     Ok(())
 }
-
 fn print_all(out: &AllOutput) {
     print_expiry(&out.expiry);
     print_counts(&out.counts);
@@ -719,7 +712,6 @@ fn print_spends(s: &SpendStats) {
     println!("indexer_populated: {}\nprobed: {}\noutpoint hits: {}\nsapling nullifier hits: {}\norchard nullifier hits: {}\nironwood nullifier hits: {}\nsprout nullifier hits: {}",
         s.indexer_populated, s.probed, s.outpoint_hits, s.sapling_nullifier_hits, s.orchard_nullifier_hits, s.ironwood_nullifier_hits, s.sprout_nullifier_hits);
 }
-
 fn indexer_looks_populated(db: &ZebraDb) -> bool {
     let tip = db.finalized_tip_height().unwrap_or(Height(0));
     let probe_from = tip.0.saturating_sub(1000);
@@ -740,7 +732,6 @@ fn indexer_looks_populated(db: &ZebraDb) -> bool {
     }
     false
 }
-
 fn expiry_height_of(tx: &Transaction) -> Option<u32> { tx.expiry_height().map(|h| h.0) }
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("~/") {
