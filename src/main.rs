@@ -91,11 +91,23 @@ struct ShieldedStats {
     ironwood_value_balance: i64,
 }
 #[derive(Default, Serialize, Clone)]
+struct ShieldedCoinbaseRecord {
+    height: u32,
+    sapling_outputs: u64,
+    orchard_actions: u64,
+    ironwood_actions: u64,
+    sapling_value_balance: i64,
+    orchard_value_balance: i64,
+    ironwood_value_balance: i64,
+}
+#[derive(Default, Serialize, Clone)]
 struct AddressStats { unique_receivers: u64, total_receiving_outputs: u64 }
 #[derive(Default, Serialize, Clone)]
 struct TypeStats {
     v1: u64, v2: u64, v3: u64, v4: u64, v5: u64, v6: u64, other: u64, coinbase: u64, user: u64,
     fully_shielded: u64, mixed: u64, transparent_only: u64,
+    shielded_coinbase: u64,
+    transparent_coinbase: u64,
 }
 #[derive(Default, Serialize, Clone)]
 struct AnchorStats { sapling: u64, orchard: u64, ironwood: u64 }
@@ -139,6 +151,8 @@ struct AllOutput {
     blocks: BlockStats,
     locktime: LocktimeStats,
     spends: SpendStats,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    shielded_coinbases: Vec<ShieldedCoinbaseRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     per_day: Option<Vec<DayStats>>,
 }
@@ -172,6 +186,7 @@ struct Acc {
     current_day: DayStats,
     day_tx_counts: Vec<u64>,
     total_tx_bytes: u64,
+    shielded_coinbases: Vec<ShieldedCoinbaseRecord>,
 }
 impl Acc {
     fn finish_day(&mut self) {
@@ -231,6 +246,8 @@ impl Acc {
         self.types.fully_shielded += other.types.fully_shielded;
         self.types.mixed += other.types.mixed;
         self.types.transparent_only += other.types.transparent_only;
+        self.types.shielded_coinbase += other.types.shielded_coinbase;
+        self.types.transparent_coinbase += other.types.transparent_coinbase;
         self.addresses.total_receiving_outputs += other.addresses.total_receiving_outputs;
         self.anchors.sapling += other.anchors.sapling;
         self.anchors.orchard += other.anchors.orchard;
@@ -252,6 +269,7 @@ impl Acc {
         self.per_block_txs.extend(other.per_block_txs);
         self.days.extend(other.days);
         self.total_tx_bytes += other.total_tx_bytes;
+        self.shielded_coinbases.extend(other.shielded_coinbases);
     }
 }
 fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network, db: &ZebraDb) {
@@ -266,6 +284,23 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
         let sapling_vb = tx.sapling_value_balance().sapling_amount().zatoshis() as i64;
         let orchard_vb = tx.orchard_value_balance().orchard_amount().zatoshis() as i64;
         let ironwood_vb = tx.ironwood_value_balance().ironwood_amount().zatoshis() as i64;
+        let is_shielded = sap_outs > 0 || orchard > 0 || ironwood > 0;
+        if is_shielded {
+            acc.types.shielded_coinbase += 1;
+            acc.current_day.types.shielded_coinbase += 1;
+            acc.shielded_coinbases.push(ShieldedCoinbaseRecord {
+                height: height.0,
+                sapling_outputs: sap_outs,
+                orchard_actions: orchard,
+                ironwood_actions: ironwood,
+                sapling_value_balance: sapling_vb,
+                orchard_value_balance: orchard_vb,
+                ironwood_value_balance: ironwood_vb,
+            });
+        } else {
+            acc.types.transparent_coinbase += 1;
+            acc.current_day.types.transparent_coinbase += 1;
+        }
         let tx_size = tx.zcash_serialized_size() as u64;
         let sapling_anchors = tx.sapling_anchors().len() as u64;
         let orchard_anchors = if tx.has_orchard_shielded_data() { 1 } else { 0 };
@@ -607,6 +642,7 @@ async fn main() -> Result<()> {
                 blocks,
                 locktime: acc.locktime,
                 spends: acc.spends,
+                shielded_coinbases: acc.shielded_coinbases,
                 per_day: if args.per_day { Some(acc.days) } else { None },
             };
             if args.json {
@@ -689,7 +725,8 @@ fn print_shielded(s: &ShieldedStats) {
 fn print_types(s: &TypeStats) {
     println!("=== Types ===");
     println!("v1: {}  v2: {}  v3: {}  v4: {}  v5: {}  v6: {}  other: {}", s.v1, s.v2, s.v3, s.v4, s.v5, s.v6, s.other);
-    println!("coinbase: {}  user: {}", s.coinbase, s.user);
+    println!("coinbase: {}  (shielded: {}  transparent: {})  user: {}",
+        s.coinbase, s.shielded_coinbase, s.transparent_coinbase, s.user);
     println!("fully shielded: {}  mixed: {}  transparent-only: {}", s.fully_shielded, s.mixed, s.transparent_only);
 }
 fn print_anchors(s: &AnchorStats) {
