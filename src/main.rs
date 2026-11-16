@@ -9,10 +9,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 use zebra_chain::{
+    amount::{Amount, NonNegative},
     block::Height,
-    parameters::Network,
+    parameters::{
+        subsidy::{nsm_fee_contribution, MAINNET_INITIAL_NSM_VALUE_BALANCE},
+        Network,
+    },
     serialization::ZcashSerialize,
     transaction::Transaction,
+    transparent::OutPoint,
 };
 use zebra_state::{
     constants::state_database_format_version_in_code,
@@ -89,6 +94,7 @@ struct ShieldedStats {
     sapling_value_balance: i64,
     orchard_value_balance: i64,
     ironwood_value_balance: i64,
+    nsm_value_balance: i64,
 }
 #[derive(Default, Serialize, Clone)]
 struct ShieldedCoinbaseRecord {
@@ -139,6 +145,17 @@ struct DayStats {
     locktime: LocktimeStats,
     spends: SpendStats,
 }
+#[derive(Default, Serialize, Clone)]
+struct TipPools {
+    transparent: u64,
+    sprout: u64,
+    sapling: u64,
+    orchard: u64,
+    ironwood: u64,
+    deferred: u64,
+    nsm: u64,
+}
+
 #[derive(Serialize)]
 struct AllOutput {
     expiry: ExpiryStats,
@@ -153,6 +170,7 @@ struct AllOutput {
     spends: SpendStats,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     shielded_coinbases: Vec<ShieldedCoinbaseRecord>,
+    tip_pools: TipPools,
     #[serde(skip_serializing_if = "Option::is_none")]
     per_day: Option<Vec<DayStats>>,
 }
@@ -234,6 +252,7 @@ impl Acc {
         self.shielded.sapling_value_balance += other.shielded.sapling_value_balance;
         self.shielded.orchard_value_balance += other.shielded.orchard_value_balance;
         self.shielded.ironwood_value_balance += other.shielded.ironwood_value_balance;
+        self.shielded.nsm_value_balance += other.shielded.nsm_value_balance;
         self.types.v1 += other.types.v1;
         self.types.v2 += other.types.v2;
         self.types.v3 += other.types.v3;
@@ -479,6 +498,48 @@ fn accumulate(acc: &mut Acc, height: Height, tx: &Transaction, network: &Network
         }
     }
 }
+fn block_nsm_fee_contribution(
+    db: &ZebraDb,
+    height: Height,
+    network: &Network,
+) -> Option<Amount<NonNegative>> {
+    use zebra_chain::transparent::Output;
+    let txs = db.transactions_by_location_range(
+        TransactionLocation::from_index(height, 0)
+            ..=TransactionLocation::max_for_height(height),
+    );
+    let mut total_fees: u64 = 0;
+    for (_loc, tx) in txs {
+        if tx.is_coinbase() {
+            continue;
+        }
+        let mut outputs: HashMap<OutPoint, Output> = HashMap::new();
+        for input in tx.inputs() {
+            if let Some(outpoint) = input.outpoint() {
+                if let Some(ordered) = db.utxo(&outpoint) {
+                    outputs.insert(outpoint, ordered.utxo.output.clone());
+                }
+            }
+        }
+        // Only count the fee when every transparent input resolved.
+        if outputs.len() == tx.inputs().len() {
+            if let Ok(transparent) = tx.transparent_value_balance_from_outputs(&outputs) {
+                let sprout = tx.sprout_value_balance().unwrap_or_default();
+                let sapling = tx.sapling_value_balance();
+                let orchard = tx.orchard_value_balance();
+                let ironwood = tx.ironwood_value_balance();
+                if let Ok(vb) = transparent + sprout + sapling + orchard + ironwood {
+                    if let Ok(fee) = vb.remaining_transaction_value() {
+                        total_fees = total_fees.saturating_add(fee.zatoshis() as u64);
+                    }
+                }
+            }
+        }
+    }
+    let fees = Amount::try_from(total_fees).ok()?;
+    Some(nsm_fee_contribution(height, network, fees))
+}
+
 fn scan_chunk(
     db: &ZebraDb,
     start: u32,
@@ -510,6 +571,20 @@ fn scan_chunk(
         for (_loc, tx) in txs {
             block_txs += 1;
             accumulate(&mut acc, height, &tx, network, db);
+        }
+        // NSM series: seed at NU7, then add the 60% fee contribution for every
+        // subsequent block where we can resolve transparent inputs.
+        if h >= 3_543_405 {
+            if h == 3_543_405 {
+                let seed = MAINNET_INITIAL_NSM_VALUE_BALANCE as i64;
+                acc.shielded.nsm_value_balance += seed;
+                acc.current_day.shielded.nsm_value_balance += seed;
+            }
+            if let Some(contrib) = block_nsm_fee_contribution(db, height, network) {
+                let c = contrib.zatoshis() as i64;
+                acc.shielded.nsm_value_balance += c;
+                acc.current_day.shielded.nsm_value_balance += c;
+            }
         }
         if let Some(tree) = db.sapling_tree_by_height(&height) {
             acc.trees.sapling = tree.position().map(|p| u64::from(p) + 1).unwrap_or(0);
@@ -618,6 +693,16 @@ async fn main() -> Result<()> {
         d.day = i as u32;
     }
     acc.finalize();
+    let tip_pools_raw = db.finalized_value_pool();
+    let tip_pools = TipPools {
+        transparent: tip_pools_raw.transparent_amount().zatoshis() as u64,
+        sprout: tip_pools_raw.sprout_amount().zatoshis() as u64,
+        sapling: tip_pools_raw.sapling_amount().zatoshis() as u64,
+        orchard: tip_pools_raw.orchard_amount().zatoshis() as u64,
+        ironwood: tip_pools_raw.ironwood_amount().zatoshis() as u64,
+        deferred: tip_pools_raw.deferred_amount().zatoshis() as u64,
+        nsm: tip_pools_raw.nsm_amount().zatoshis() as u64,
+    };
     let total_txs: u64 = acc.per_block_txs.iter().sum();
     let max_txs = acc.per_block_txs.iter().copied().max().unwrap_or(0);
     let n_blocks = acc.per_block_txs.len() as u64;
@@ -643,6 +728,7 @@ async fn main() -> Result<()> {
                 locktime: acc.locktime,
                 spends: acc.spends,
                 shielded_coinbases: acc.shielded_coinbases,
+                tip_pools,
                 per_day: if args.per_day { Some(acc.days) } else { None },
             };
             if args.json {
@@ -676,6 +762,10 @@ fn print_all(out: &AllOutput) {
     print_expiry(&out.expiry);
     print_counts(&out.counts);
     print_shielded(&out.shielded);
+    println!("=== Tip pools (zatoshis) ===");
+    println!("transparent: {}\nsprout: {}\nsapling: {}\norchard: {}\nironwood: {}\ndeferred: {}\nnsm: {}",
+        out.tip_pools.transparent, out.tip_pools.sprout, out.tip_pools.sapling,
+        out.tip_pools.orchard, out.tip_pools.ironwood, out.tip_pools.deferred, out.tip_pools.nsm);
     print_types(&out.types);
     print_addresses(&out.addresses);
     print_anchors(&out.anchors);
@@ -718,9 +808,9 @@ fn print_expiry(s: &ExpiryStats) {
 fn print_counts(s: &CountStats) { println!("=== Counts ===\nblocks: {}  txs: {}", s.blocks, s.txs); }
 fn print_shielded(s: &ShieldedStats) {
     println!("=== Shielded actions ===");
-    println!("sapling spends: {}\nsapling outputs: {}\norchard actions: {}\nironwood actions: {}\nsprout joinsplits: {}\nsprout vpub_old: {}\nsprout vpub_new: {}\nsapling value balance: {}\norchard value balance: {}\nironwood value balance: {}",
+    println!("sapling spends: {}\nsapling outputs: {}\norchard actions: {}\nironwood actions: {}\nsprout joinsplits: {}\nsprout vpub_old: {}\nsprout vpub_new: {}\nsapling value balance: {}\norchard value balance: {}\nironwood value balance: {}\nnsm value balance: {}",
         s.sapling_spends, s.sapling_outputs, s.orchard_actions, s.ironwood_actions, s.sprout_joinsplits,
-        s.sprout_vpub_old, s.sprout_vpub_new, s.sapling_value_balance, s.orchard_value_balance, s.ironwood_value_balance);
+        s.sprout_vpub_old, s.sprout_vpub_new, s.sapling_value_balance, s.orchard_value_balance, s.ironwood_value_balance, s.nsm_value_balance);
 }
 fn print_types(s: &TypeStats) {
     println!("=== Types ===");
